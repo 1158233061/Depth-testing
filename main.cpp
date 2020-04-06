@@ -120,10 +120,14 @@ int main(int argc, char* argv[])
 #pragma region configure global opengl state
 	glEnable(GL_DEPTH_TEST);
 	glDepthFunc(GL_LESS);
+	glEnable(GL_STENCIL_TEST);
+	//glStencilFunc(GL_NOTEQUAL, 1, 0xFF);
+	glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
 #pragma endregion
 
 #pragma region Init shader Program
 	Shader shader("depth_test.vert", "depth_test.frag");
+	Shader shaderSingleColor("depth_test.vert", "stencil_single_color.frag");
 #pragma endregion
 
 #pragma region Init and Load Models to VAO, VBO
@@ -178,15 +182,32 @@ int main(int argc, char* argv[])
 
 		// 渲染
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
+		// 配置空间矩阵
+		modelMat = glm::mat4(1.0f);
+		viewMat = myCamera.GetViewMatrix();
+
+		// 配置着色器的空间矩阵
+		shaderSingleColor.use();
+		shaderSingleColor.setMat4("view", viewMat);
+		shaderSingleColor.setMat4("projection", projMat);
 
 		shader.use();
-		modelMat = glm::mat4(1.0f);
-		// 更新摄像机向量
-		viewMat = myCamera.GetViewMatrix();
 		shader.setMat4("view", viewMat);
 		shader.setMat4("projection", projMat);
+
+		// 正常绘制地板，但不写入缓冲区
+		glStencilMask(0x00);
+		// floor
+		glBindVertexArray(planeVAO);
+		glBindTexture(GL_TEXTURE_2D, floorTexture);
+		shader.setMat4("model", glm::mat4(1.0f));
+		glDrawArrays(GL_TRIANGLES, 0, 6);
+		glBindVertexArray(0);
+		// 第一次正常绘制箱子，写入缓冲区
+		glStencilFunc(GL_ALWAYS, 1, 0xFF);
+		glStencilMask(0xFF);
 		// cubes
 		glBindVertexArray(cubeVAO);
 		glActiveTexture(GL_TEXTURE0);
@@ -198,12 +219,28 @@ int main(int argc, char* argv[])
 		modelMat = glm::translate(modelMat, glm::vec3(2.0f, 0.0f, 0.0f));
 		shader.setMat4("model", modelMat);
 		glDrawArrays(GL_TRIANGLES, 0, 36);
-		// floor
-		glBindVertexArray(planeVAO);
-		glBindTexture(GL_TEXTURE_2D, floorTexture);
-		shader.setMat4("model", glm::mat4(1.0f));
-		glDrawArrays(GL_TRIANGLES, 0, 6);
+		// 第二次绘制箱子，略微缩小，这次禁用模板书写
+		glStencilFunc(GL_NOTEQUAL, 1, 0xff);
+		glStencilMask(0x00);
+		glDisable(GL_DEPTH_TEST);
+		shaderSingleColor.use();
+		float scale = 1.05;
+		// cubes
+		glBindVertexArray(cubeVAO);
+		glBindTexture(GL_TEXTURE_2D, cubeTexture);
+		modelMat = glm::mat4(1.0f);
+		modelMat = glm::translate(modelMat, glm::vec3(-1.0f, 0.0f, -1.0f));
+		modelMat = glm::scale(modelMat, glm::vec3(scale, scale, scale));
+		shaderSingleColor.setMat4("model", modelMat);
+		glDrawArrays(GL_TRIANGLES, 0, 36);
+		modelMat = glm::mat4(1.0f);
+		modelMat = glm::translate(modelMat, glm::vec3(2.0f, 0.0f, 0.0f));
+		modelMat = glm::scale(modelMat, glm::vec3(scale, scale, scale));
+		shaderSingleColor.setMat4("model", modelMat);
+		glDrawArrays(GL_TRIANGLES, 0, 36);
 		glBindVertexArray(0);
+		glStencilMask(0xFF);
+		glEnable(GL_DEPTH_TEST);
 
 		// 检查并调用事件，交换缓冲，为下一次做准备
 		glfwSwapBuffers(window);
@@ -212,7 +249,9 @@ int main(int argc, char* argv[])
 	}
 	//清空VAO,cubeVBO
 	glDeleteVertexArrays(1, &cubeVAO);
+	glDeleteVertexArrays(1, &planeVAO);
 	glDeleteBuffers(1, &cubeVBO);
+	glDeleteBuffers(1, &planeVBO);
 
 	//退出程序
 	glfwTerminate();
