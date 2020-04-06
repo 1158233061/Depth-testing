@@ -1,8 +1,10 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#include <iostream>
+#include <vector>
+#include <map>
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
-#include <iostream>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -71,11 +73,27 @@ float planeVertices[] = {
 	-5.0f, -0.5f, -5.0f,  0.0f, 2.0f,
 	 5.0f, -0.5f, -5.0f,  2.0f, 2.0f
 };
+float transparentVertices[] = {
+	0.0f,  0.5f,  0.0f,  0.0f,  0.0f,
+	0.0f, -0.5f,  0.0f,  0.0f,  1.0f,
+	1.0f, -0.5f,  0.0f,  1.0f,  1.0f,
+
+	0.0f,  0.5f,  0.0f,  0.0f,  0.0f,
+	1.0f, -0.5f,  0.0f,  1.0f,  1.0f,
+	1.0f,  0.5f,  0.0f,  1.0f,  0.0f
+};
+std::vector<glm::vec3> vegetation
+{
+	glm::vec3(-1.5f, 0.0f, -0.48f),
+	glm::vec3(1.5f, 0.0f, 0.51f),
+	glm::vec3(0.0f, 0.0f, 0.7f),
+	glm::vec3(-0.3f, 0.0f, -2.3f),
+	glm::vec3(0.5f, 0.0f, -0.6f)
+};
 #pragma endregion
 
 #pragma region Camera Declare
 //初始化摄像机
-	//Camera myCamera(glm::vec3(0, 0, 3.0f), glm::vec3(0, 0, 0), glm::vec3(0, 1.0f, 0));
 Camera myCamera(glm::vec3(0, 0, 3.0f), glm::radians(0.0f), glm::radians(180.0f), glm::vec3(0, 1.0f, 0));
 #pragma endregion
 
@@ -119,15 +137,12 @@ int main(int argc, char* argv[])
 
 #pragma region configure global opengl state
 	glEnable(GL_DEPTH_TEST);
-	glDepthFunc(GL_LESS);
-	glEnable(GL_STENCIL_TEST);
-	//glStencilFunc(GL_NOTEQUAL, 1, 0xFF);
-	glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 #pragma endregion
 
 #pragma region Init shader Program
 	Shader shader("depth_test.vert", "depth_test.frag");
-	Shader shaderSingleColor("depth_test.vert", "stencil_single_color.frag");
 #pragma endregion
 
 #pragma region Init and Load Models to VAO, VBO
@@ -155,14 +170,27 @@ int main(int argc, char* argv[])
 	glEnableVertexAttribArray(1);
 	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
 	glBindVertexArray(0);
+	// grass VAO
+	unsigned int transparentVAO, transparentVBO;
+	glGenVertexArrays(1, &transparentVAO);
+	glGenBuffers(1, &transparentVBO);
+	glBindVertexArray(transparentVAO);
+	glBindBuffer(GL_ARRAY_BUFFER, transparentVBO);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(transparentVertices), transparentVertices, GL_STATIC_DRAW);
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+	glEnableVertexAttribArray(1);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+	glBindVertexArray(0);
 #pragma endregion
 
 #pragma region Init and Load Textures
 	//在加载图片前进行图片反转处理
-	stbi_set_flip_vertically_on_load(true);
+	//stbi_set_flip_vertically_on_load(true);
 	//创建、加载并生成纹理
 	unsigned int cubeTexture = LoadImageToGPU("wall.jpg");
 	unsigned int floorTexture = LoadImageToGPU("metal.png");
+	unsigned int transparentTexture = LoadImageToGPU("blend.png");
 #pragma endregion
 
 #pragma region Prepare MVP matrices
@@ -180,67 +208,54 @@ int main(int argc, char* argv[])
 		// 输入
 		processInput(window);
 
+		// 渲染前排序
+		std::map<float, glm::vec3> sorted;
+		for (unsigned int i = 0; i < vegetation.size(); i++)
+		{
+			float distance = glm::length(myCamera.Position - vegetation[i]);
+			sorted[distance] = vegetation[i];
+		}
+
 		// 渲染
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 		// 配置空间矩阵
 		modelMat = glm::mat4(1.0f);
 		viewMat = myCamera.GetViewMatrix();
 
 		// 配置着色器的空间矩阵
-		shaderSingleColor.use();
-		shaderSingleColor.setMat4("view", viewMat);
-		shaderSingleColor.setMat4("projection", projMat);
-
 		shader.use();
 		shader.setMat4("view", viewMat);
 		shader.setMat4("projection", projMat);
 
-		// 正常绘制地板，但不写入缓冲区
-		glStencilMask(0x00);
 		// floor
 		glBindVertexArray(planeVAO);
 		glBindTexture(GL_TEXTURE_2D, floorTexture);
 		shader.setMat4("model", glm::mat4(1.0f));
 		glDrawArrays(GL_TRIANGLES, 0, 6);
 		glBindVertexArray(0);
-		// 第一次正常绘制箱子，写入缓冲区
-		glStencilFunc(GL_ALWAYS, 1, 0xFF);
-		glStencilMask(0xFF);
 		// cubes
 		glBindVertexArray(cubeVAO);
 		glActiveTexture(GL_TEXTURE0);
 		glBindTexture(GL_TEXTURE_2D, cubeTexture);
-		modelMat = glm::translate(modelMat, glm::vec3(-1.0f, 0.0f, -1.0f));
+		modelMat = glm::translate(modelMat, glm::vec3(-1.0f, 1.0f, -1.0f));
 		shader.setMat4("model", modelMat);
 		glDrawArrays(GL_TRIANGLES, 0, 36);
 		modelMat = glm::mat4(1.0f);
-		modelMat = glm::translate(modelMat, glm::vec3(2.0f, 0.0f, 0.0f));
+		modelMat = glm::translate(modelMat, glm::vec3(2.0f, 1.0f, 0.0f));
 		shader.setMat4("model", modelMat);
 		glDrawArrays(GL_TRIANGLES, 0, 36);
-		// 第二次绘制箱子，略微缩小，这次禁用模板书写
-		glStencilFunc(GL_NOTEQUAL, 1, 0xff);
-		glStencilMask(0x00);
-		glDisable(GL_DEPTH_TEST);
-		shaderSingleColor.use();
-		float scale = 1.05;
-		// cubes
-		glBindVertexArray(cubeVAO);
-		glBindTexture(GL_TEXTURE_2D, cubeTexture);
-		modelMat = glm::mat4(1.0f);
-		modelMat = glm::translate(modelMat, glm::vec3(-1.0f, 0.0f, -1.0f));
-		modelMat = glm::scale(modelMat, glm::vec3(scale, scale, scale));
-		shaderSingleColor.setMat4("model", modelMat);
-		glDrawArrays(GL_TRIANGLES, 0, 36);
-		modelMat = glm::mat4(1.0f);
-		modelMat = glm::translate(modelMat, glm::vec3(2.0f, 0.0f, 0.0f));
-		modelMat = glm::scale(modelMat, glm::vec3(scale, scale, scale));
-		shaderSingleColor.setMat4("model", modelMat);
-		glDrawArrays(GL_TRIANGLES, 0, 36);
-		glBindVertexArray(0);
-		glStencilMask(0xFF);
-		glEnable(GL_DEPTH_TEST);
+		// windows (from furthest to nearest)
+		glBindVertexArray(transparentVAO);
+		glBindTexture(GL_TEXTURE_2D, transparentTexture);
+		for (std::map<float, glm::vec3>::reverse_iterator it = sorted.rbegin(); it != sorted.rend(); ++it)
+		{
+			modelMat = glm::mat4(1.0f);
+			modelMat = glm::translate(modelMat, it->second);
+			shader.setMat4("model", modelMat);
+			glDrawArrays(GL_TRIANGLES, 0, 6);
+		}
 
 		// 检查并调用事件，交换缓冲，为下一次做准备
 		glfwSwapBuffers(window);
@@ -249,10 +264,11 @@ int main(int argc, char* argv[])
 	}
 	//清空VAO,cubeVBO
 	glDeleteVertexArrays(1, &cubeVAO);
-	glDeleteVertexArrays(1, &planeVAO);
 	glDeleteBuffers(1, &cubeVBO);
+	glDeleteVertexArrays(1, &planeVAO);
 	glDeleteBuffers(1, &planeVBO);
-
+	glDeleteVertexArrays(1, &transparentVAO);
+	glDeleteBuffers(1, &transparentVBO);
 	//退出程序
 	glfwTerminate();
 	return 0;
