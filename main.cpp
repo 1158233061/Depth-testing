@@ -90,6 +90,15 @@ std::vector<glm::vec3> vegetation
 	glm::vec3(-0.3f, 0.0f, -2.3f),
 	glm::vec3(0.5f, 0.0f, -0.6f)
 };
+float quadVertices[] = {
+		-1.0f,  1.0f,  0.0f, 1.0f,
+		-1.0f, -1.0f,  0.0f, 0.0f,
+		 1.0f, -1.0f,  1.0f, 0.0f,
+
+		-1.0f,  1.0f,  0.0f, 1.0f,
+		 1.0f, -1.0f,  1.0f, 0.0f,
+		 1.0f,  1.0f,  1.0f, 1.0f
+};
 #pragma endregion
 
 #pragma region Camera Declare
@@ -137,12 +146,11 @@ int main(int argc, char* argv[])
 
 #pragma region configure global opengl state
 	glEnable(GL_DEPTH_TEST);
-	glEnable(GL_BLEND);
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 #pragma endregion
 
 #pragma region Init shader Program
 	Shader shader("depth_test.vert", "depth_test.frag");
+	Shader screenShader("framebuffers_screen.vert", "framebuffers_screen.frag");
 #pragma endregion
 
 #pragma region Init and Load Models to VAO, VBO
@@ -170,18 +178,17 @@ int main(int argc, char* argv[])
 	glEnableVertexAttribArray(1);
 	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
 	glBindVertexArray(0);
-	// grass VAO
-	unsigned int transparentVAO, transparentVBO;
-	glGenVertexArrays(1, &transparentVAO);
-	glGenBuffers(1, &transparentVBO);
-	glBindVertexArray(transparentVAO);
-	glBindBuffer(GL_ARRAY_BUFFER, transparentVBO);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(transparentVertices), transparentVertices, GL_STATIC_DRAW);
+	// screen quad VAO
+	unsigned int quadVAO, quadVBO;
+	glGenVertexArrays(1, &quadVAO);
+	glGenBuffers(1, &quadVBO);
+	glBindVertexArray(quadVAO);
+	glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), &quadVertices, GL_STATIC_DRAW);
 	glEnableVertexAttribArray(0);
-	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
 	glEnableVertexAttribArray(1);
-	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
-	glBindVertexArray(0);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
 #pragma endregion
 
 #pragma region Init and Load Textures
@@ -201,21 +208,37 @@ int main(int argc, char* argv[])
 	projMat = glm::perspective(glm::radians(45.0f), 800.0f / 800.0f, 0.1f, 100.0f);
 #pragma endregion
 
+	// framebuffer configuration
+	unsigned int framebuffer;
+	glGenFramebuffers(1, &framebuffer);
+	glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+	// create a color attachment texture
+	unsigned int textureColorbuffer;
+	glGenTextures(1, &textureColorbuffer);
+	glBindTexture(GL_TEXTURE_2D, textureColorbuffer);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, SCR_WIDTH, SCR_HEIGHT, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, textureColorbuffer, 0);
+	// create a renderbuffer object for depth and stencil attachment (we won't be sampling these)
+	unsigned int rbo;
+	glGenRenderbuffers(1, &rbo);
+	glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+	glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, SCR_WIDTH, SCR_HEIGHT); 
+	glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rbo);
+	// now that we actually created the framebuffer and added all attachments we want to check if it is actually complete now
+	if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+		std::cout << "ERROR::FRAMEBUFFER:: Framebuffer is not complete!" << std::endl;
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
 #pragma region 
 	while (!glfwWindowShouldClose(window))
 	{
 		// 输入
 		processInput(window);
-
-		// 渲染前排序
-		std::map<float, glm::vec3> sorted;
-		for (unsigned int i = 0; i < vegetation.size(); i++)
-		{
-			float distance = glm::length(myCamera.Position - vegetation[i]);
-			sorted[distance] = vegetation[i];
-		}
-
+		// 绑定帧缓冲区，开启深度测试
+		glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+		glEnable(GL_DEPTH_TEST);
 		// 渲染
 		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -229,33 +252,35 @@ int main(int argc, char* argv[])
 		shader.setMat4("view", viewMat);
 		shader.setMat4("projection", projMat);
 
+		// cubes
+		glBindVertexArray(cubeVAO);
+		glActiveTexture(GL_TEXTURE0);
+		glBindTexture(GL_TEXTURE_2D, cubeTexture);
+		modelMat = glm::translate(modelMat, glm::vec3(-1.0f, 0.1f, -1.0f));
+		shader.setMat4("model", modelMat);
+		glDrawArrays(GL_TRIANGLES, 0, 36);
+		modelMat = glm::mat4(1.0f);
+		modelMat = glm::translate(modelMat, glm::vec3(2.0f, 0.1f, 0.0f));
+		shader.setMat4("model", modelMat);
+		glDrawArrays(GL_TRIANGLES, 0, 36);
 		// floor
 		glBindVertexArray(planeVAO);
 		glBindTexture(GL_TEXTURE_2D, floorTexture);
 		shader.setMat4("model", glm::mat4(1.0f));
 		glDrawArrays(GL_TRIANGLES, 0, 6);
 		glBindVertexArray(0);
-		// cubes
-		glBindVertexArray(cubeVAO);
-		glActiveTexture(GL_TEXTURE0);
-		glBindTexture(GL_TEXTURE_2D, cubeTexture);
-		modelMat = glm::translate(modelMat, glm::vec3(-1.0f, 1.0f, -1.0f));
-		shader.setMat4("model", modelMat);
-		glDrawArrays(GL_TRIANGLES, 0, 36);
-		modelMat = glm::mat4(1.0f);
-		modelMat = glm::translate(modelMat, glm::vec3(2.0f, 1.0f, 0.0f));
-		shader.setMat4("model", modelMat);
-		glDrawArrays(GL_TRIANGLES, 0, 36);
-		// windows (from furthest to nearest)
-		glBindVertexArray(transparentVAO);
-		glBindTexture(GL_TEXTURE_2D, transparentTexture);
-		for (std::map<float, glm::vec3>::reverse_iterator it = sorted.rbegin(); it != sorted.rend(); ++it)
-		{
-			modelMat = glm::mat4(1.0f);
-			modelMat = glm::translate(modelMat, it->second);
-			shader.setMat4("model", modelMat);
-			glDrawArrays(GL_TRIANGLES, 0, 6);
-		}
+
+		// 现在绑定回默认的framebuffer，并使用附加的framebuffer颜色纹理绘制一个四平面
+		glBindFramebuffer(GL_FRAMEBUFFER, 0);
+		glDisable(GL_DEPTH_TEST);
+		// clear all relevant buffers
+		glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+		glClear(GL_COLOR_BUFFER_BIT);
+
+		screenShader.use();
+		glBindVertexArray(quadVAO);
+		glBindTexture(GL_TEXTURE_2D, textureColorbuffer);
+		glDrawArrays(GL_TRIANGLES, 0, 6);
 
 		// 检查并调用事件，交换缓冲，为下一次做准备
 		glfwSwapBuffers(window);
@@ -267,8 +292,8 @@ int main(int argc, char* argv[])
 	glDeleteBuffers(1, &cubeVBO);
 	glDeleteVertexArrays(1, &planeVAO);
 	glDeleteBuffers(1, &planeVBO);
-	glDeleteVertexArrays(1, &transparentVAO);
-	glDeleteBuffers(1, &transparentVBO);
+	glDeleteVertexArrays(1, &quadVAO);
+	glDeleteBuffers(1, &quadVBO);
 	//退出程序
 	glfwTerminate();
 	return 0;
